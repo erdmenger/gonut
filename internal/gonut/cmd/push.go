@@ -21,9 +21,12 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
+
+	"encoding/json"
 
 	"github.com/spf13/cobra"
 
@@ -49,6 +52,7 @@ type sampleApp struct {
 var (
 	deleteSetting  string
 	summarySetting string
+	outputSetting  string
 )
 
 var sampleApps = []sampleApp{
@@ -120,6 +124,7 @@ func init() {
 
 	pushCmd.PersistentFlags().StringVarP(&deleteSetting, "delete", "d", "always", "Delete application after push: always, never, on-success")
 	pushCmd.PersistentFlags().StringVarP(&summarySetting, "summary", "s", "short", "Push summary detail level: quiet, short, full")
+	pushCmd.PersistentFlags().StringVarP(&outputSetting, "output", "o", "", "Push summary type: json | yaml")
 
 	for _, sampleApp := range sampleApps {
 		pushCmd.AddCommand(&cobra.Command{
@@ -166,20 +171,99 @@ func genericCommandFunc(cmd *cobra.Command, args []string) {
 	}
 }
 
-func runSampleAppPush(app sampleApp) error {
-	var cleanupSetting cf.AppCleanupSetting
+func mapDeleteSetting(deleteSetting string) (cf.AppCleanupSetting, error) {
+
 	switch deleteSetting {
 	case "always":
-		cleanupSetting = cf.Always
-
+		return cf.Always, nil
 	case "never":
-		cleanupSetting = cf.Never
+		return cf.Never, nil
 
 	case "on-success":
-		cleanupSetting = cf.OnSuccess
+		return cf.OnSuccess, nil
 
 	default:
-		return fmt.Errorf("unsupported delete setting: %s", deleteSetting)
+		return -1, fmt.Errorf("unsupported delete setting: %s", deleteSetting)
+	}
+}
+
+func mapOutputSetting(outputSetting string) (cf.OutputType, error) {
+
+	switch strings.ToLower(outputSetting) {
+	case "json":
+		return cf.JSON, nil
+	case "yaml":
+		return cf.YAML, nil
+	default:
+		// return -1, fmt.Errorf("unsupported output type: %s", outputSetting)
+		return -1, nil
+	}
+}
+
+func summaryPrintout(appCaption string, report *cf.PushReport, summarySetting string, outputType cf.OutputType) error {
+
+	switch summarySetting {
+	case "short", "oneline":
+		bunt.Printf("Successfully pushed *%s* sample app in CadetBlue{%s}.\n",
+			appCaption,
+			humanReadableDuration(report.ElapsedTime()),
+		)
+
+	case "full":
+		switch outputType {
+		case cf.JSON:
+
+			buffer := bytes.Buffer{}
+
+			output, err := report.ToJSON()
+			if err != nil {
+				return err
+			}
+
+			indentError := json.Indent(&buffer, output, "", "   ")
+			if indentError != nil {
+				return indentError
+			}
+
+			bunt.Println(buffer.String())
+
+		case cf.YAML:
+			output, err := report.ToYAML()
+			if err != nil {
+				return err
+			}
+
+			bunt.Println(string(output))
+
+		default:
+			bunt.Printf("Successfully pushed *%s* sample app in CadetBlue{%s}:\n", appCaption, humanReadableDuration(report.ElapsedTime()))
+			bunt.Printf("     DimGray{_stack:_} DarkSeaGreen{%s}\n", report.Stack())
+			bunt.Printf(" DimGray{_buildpack:_} DarkSeaGreen{%s}\n", report.Buildpack())
+			if report.HasTimeDetails() {
+				bunt.Printf("   DimGray{_ramp-up:_} SteelBlue{%s}\n", humanReadableDuration(report.InitTime()))
+				bunt.Printf("  DimGray{_creating:_} SteelBlue{%s}\n", humanReadableDuration(report.CreatingTime()))
+				bunt.Printf(" DimGray{_uploading:_} SteelBlue{%s}\n", humanReadableDuration(report.UploadingTime()))
+				bunt.Printf("   DimGray{_staging:_} SteelBlue{%s}\n", humanReadableDuration(report.StagingTime()))
+				bunt.Printf("  DimGray{_starting:_} SteelBlue{%s}\n", humanReadableDuration(report.StartingTime()))
+			}
+			bunt.Printf("\n")
+		}
+
+	}
+
+	return nil
+}
+
+func runSampleAppPush(app sampleApp) error {
+
+	cleanupSetting, err := mapDeleteSetting(deleteSetting)
+	if err != nil {
+		return err
+	}
+
+	outputType, err := mapOutputSetting(outputSetting)
+	if err != nil {
+		return err
 	}
 
 	appName := text.RandomStringWithPrefix(app.appNamePrefix, 32)
@@ -194,31 +278,7 @@ func runSampleAppPush(app sampleApp) error {
 		return err
 	}
 
-	switch summarySetting {
-	case "quiet":
-		// Nothing to report
-
-	case "short", "oneline":
-		bunt.Printf("Successfully pushed *%s* sample app in CadetBlue{%s}.\n",
-			app.caption,
-			humanReadableDuration(report.ElapsedTime()),
-		)
-
-	case "full":
-		bunt.Printf("Successfully pushed *%s* sample app in CadetBlue{%s}:\n", app.caption, humanReadableDuration(report.ElapsedTime()))
-		bunt.Printf("     DimGray{_stack:_} DarkSeaGreen{%s}\n", report.Stack())
-		bunt.Printf(" DimGray{_buildpack:_} DarkSeaGreen{%s}\n", report.Buildpack())
-		if report.HasTimeDetails() {
-			bunt.Printf("   DimGray{_ramp-up:_} SteelBlue{%s}\n", humanReadableDuration(report.InitTime()))
-			bunt.Printf("  DimGray{_creating:_} SteelBlue{%s}\n", humanReadableDuration(report.CreatingTime()))
-			bunt.Printf(" DimGray{_uploading:_} SteelBlue{%s}\n", humanReadableDuration(report.UploadingTime()))
-			bunt.Printf("   DimGray{_staging:_} SteelBlue{%s}\n", humanReadableDuration(report.StagingTime()))
-			bunt.Printf("  DimGray{_starting:_} SteelBlue{%s}\n", humanReadableDuration(report.StartingTime()))
-		}
-		bunt.Printf("\n")
-	}
-
-	return nil
+	return summaryPrintout(app.caption, report, summarySetting, outputType)
 }
 
 func humanReadableDuration(duration time.Duration) string {
